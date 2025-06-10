@@ -1,2 +1,4 @@
 dll/*.dll filter=lfs diff=lfs merge=lfs -text
 onnxruntime/* filter=lfs diff=lfs merge=lfs -text
+onnxruntime/lib/* filter=lfs diff=lfs merge=lfs -text
+onnxruntime/include/* filter=lfs diff=lfs merge=lfs -text
