@@ -1,0 +1,4 @@
+cd build
+cmake .. -DCMAKE_TOOLCHAIN_FILE=D:/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake --build . --config Release
+copy the built .exe, yolov8s_cs2.onnx and cs2_screenshot.jpg into folder dll and execute the .exe

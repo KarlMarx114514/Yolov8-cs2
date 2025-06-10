@@ -1,0 +1,2 @@
+dll/*.dll filter=lfs diff=lfs merge=lfs -text
+onnxruntime/* filter=lfs diff=lfs merge=lfs -text
