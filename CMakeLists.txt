@@ -44,14 +44,6 @@ if(NOT EXISTS ${ONNXRUNTIME_ROOT_PATH})
     message(FATAL_ERROR "ONNX Runtime directory not found at ${ONNXRUNTIME_ROOT_PATH}")
 endif()
 
-if(NOT EXISTS ${ONNXRUNTIME_INCLUDE_DIRS})
-    message(FATAL_ERROR "ONNX Runtime include directory not found at ${ONNXRUNTIME_INCLUDE_DIRS}")
-endif()
-
-if(NOT EXISTS ${ONNXRUNTIME_LIB_DIRS})
-    message(FATAL_ERROR "ONNX Runtime lib directory not found at ${ONNXRUNTIME_LIB_DIRS}")
-endif()
-
 # Find ONNX Runtime libraries
 find_library(ONNXRUNTIME_LIB onnxruntime HINTS ${ONNXRUNTIME_LIB_DIRS})
 find_library(ONNXRUNTIME_PROVIDERS_CUDA_LIB onnxruntime_providers_cuda HINTS ${ONNXRUNTIME_LIB_DIRS})
@@ -63,48 +55,78 @@ endif()
 
 message(STATUS "ONNX Runtime found: ${ONNXRUNTIME_LIB}")
 
-if(ONNXRUNTIME_PROVIDERS_CUDA_LIB)
-    message(STATUS "ONNX Runtime CUDA provider found: ${ONNXRUNTIME_PROVIDERS_CUDA_LIB}")
-else()
-    message(WARNING "ONNX Runtime CUDA provider not found - GPU acceleration may not work")
-endif()
+# DEBUG: Check if modular structure exists and find all files
+message(STATUS "")
+message(STATUS "=== DEBUGGING SOURCE FILE DETECTION ===")
+message(STATUS "Current source directory: ${CMAKE_CURRENT_SOURCE_DIR}")
 
-if(ONNXRUNTIME_PROVIDERS_SHARED_LIB)
-    message(STATUS "ONNX Runtime shared providers found: ${ONNXRUNTIME_PROVIDERS_SHARED_LIB}")
-endif()
+# Check if directories exist
+set(REQUIRED_DIRS 
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/capture"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/control"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/display"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/export"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/realtime"
+)
 
-# Check if we have modular source files or single main.cpp
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/core" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/capture")
-    # Modular structure exists - collect source files by module
+foreach(DIR ${REQUIRED_DIRS})
+    if(EXISTS ${DIR})
+        message(STATUS "✓ Directory exists: ${DIR}")
+    else()
+        message(STATUS "✗ Directory missing: ${DIR}")
+    endif()
+endforeach()
+
+# Check for modular vs single file structure
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/core" AND 
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/capture" AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/control" AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/display" AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/export" AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/realtime")
+    
+    message(STATUS "Using MODULAR structure")
+    
+    # Collect source files by module with detailed logging
     file(GLOB CORE_SOURCES "src/core/*.cpp")
     file(GLOB CAPTURE_SOURCES "src/capture/*.cpp")
+    file(GLOB CONTROL_SOURCES "src/control/*.cpp")
     file(GLOB DISPLAY_SOURCES "src/display/*.cpp")
     file(GLOB EXPORT_SOURCES "src/export/*.cpp")
     file(GLOB REALTIME_SOURCES "src/realtime/*.cpp")
     file(GLOB UTILS_SOURCES "src/utils/*.cpp")
 
+    # Debug: Print found sources
+    message(STATUS "")
+    message(STATUS "=== FOUND SOURCE FILES ===")
+    message(STATUS "Core sources: ${CORE_SOURCES}")
+    message(STATUS "Capture sources: ${CAPTURE_SOURCES}")
+    message(STATUS "Control sources: ${CONTROL_SOURCES}")
+    message(STATUS "Display sources: ${DISPLAY_SOURCES}")
+    message(STATUS "Export sources: ${EXPORT_SOURCES}")
+    message(STATUS "Realtime sources: ${REALTIME_SOURCES}")
+    message(STATUS "Utils sources: ${UTILS_SOURCES}")
+
     set(ALL_LIB_SOURCES 
         ${CORE_SOURCES}
         ${CAPTURE_SOURCES}
+        ${CONTROL_SOURCES}
         ${DISPLAY_SOURCES}
         ${EXPORT_SOURCES}
         ${REALTIME_SOURCES}
         ${UTILS_SOURCES}
     )
 
-    # Print found sources for debugging
-    message(STATUS "Using modular structure:")
-    message(STATUS "Found core sources: ${CORE_SOURCES}")
-    message(STATUS "Found capture sources: ${CAPTURE_SOURCES}")
-    message(STATUS "Found display sources: ${DISPLAY_SOURCES}")
-    message(STATUS "Found export sources: ${EXPORT_SOURCES}")
-    message(STATUS "Found realtime sources: ${REALTIME_SOURCES}")
-    message(STATUS "Found utils sources: ${UTILS_SOURCES}")
+    message(STATUS "")
+    message(STATUS "Total library sources found: ${ALL_LIB_SOURCES}")
+    message(STATUS "Total source count: ")
+    list(LENGTH ALL_LIB_SOURCES SOURCE_COUNT)
+    message(STATUS "  ${SOURCE_COUNT} files")
 
     set(MODULAR_BUILD TRUE)
 else()
-    # Single file structure - use main.cpp directly
-    message(STATUS "Using single-file structure with main.cpp")
+    message(STATUS "Using SINGLE-FILE structure with main.cpp")
     set(MODULAR_BUILD FALSE)
 endif()
 
@@ -128,6 +150,14 @@ endif()
 
 # Create executable - either modular or single file
 if(MODULAR_BUILD)
+    message(STATUS "")
+    message(STATUS "=== BUILDING MODULAR VERSION ===")
+    
+    # Ensure we have source files
+    if(NOT ALL_LIB_SOURCES)
+        message(FATAL_ERROR "No source files found for modular build!")
+    endif()
+    
     # Create static library for the CS2 detection system
     add_library(${PROJECT_NAME}_lib STATIC ${ALL_LIB_SOURCES})
 
@@ -157,7 +187,12 @@ if(MODULAR_BUILD)
 
     # Link the static library to the executable
     target_link_libraries(${PROJECT_NAME} PRIVATE ${PROJECT_NAME}_lib)
+    
+    message(STATUS "Modular build configured successfully")
 else()
+    message(STATUS "")
+    message(STATUS "=== BUILDING SINGLE-FILE VERSION ===")
+    
     # Single file build - create executable directly
     add_executable(${PROJECT_NAME} main.cpp)
 
@@ -184,52 +219,28 @@ endif()
 
 # MSVC-specific options
 if(MSVC)
-    # MSVC compile options
     if(MODULAR_BUILD)
         target_compile_options(${PROJECT_NAME}_lib PUBLIC
-            /W3          # Warning level 3
-            /permissive- # Disable non-conforming code
-            /Zc:__cplusplus # Enable correct __cplusplus macro
-            /MP          # Parallel compilation
+            /W3 /permissive- /Zc:__cplusplus /MP
         )
-        
-        # Runtime library
         set_property(TARGET ${PROJECT_NAME}_lib PROPERTY
             MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
     else()
         target_compile_options(${PROJECT_NAME} PRIVATE
-            /W3          # Warning level 3
-            /permissive- # Disable non-conforming code
-            /Zc:__cplusplus # Enable correct __cplusplus macro
-            /MP          # Parallel compilation
+            /W3 /permissive- /Zc:__cplusplus /MP
         )
     endif()
     
     set_property(TARGET ${PROJECT_NAME} PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
-        
 else()
     # GCC/Clang options (MinGW)
     if(MODULAR_BUILD)
-        target_compile_options(${PROJECT_NAME}_lib PUBLIC
-            -Wall 
-            -Wextra 
-            -Wpedantic
-            -Wno-unused-parameter
-        )
-        
-        # Enable threading support
+        target_compile_options(${PROJECT_NAME}_lib PUBLIC -Wall -Wextra -Wpedantic)
         find_package(Threads REQUIRED)
         target_link_libraries(${PROJECT_NAME}_lib PUBLIC Threads::Threads)
     else()
-        target_compile_options(${PROJECT_NAME} PRIVATE
-            -Wall 
-            -Wextra 
-            -Wpedantic
-            -Wno-unused-parameter
-        )
-        
-        # Enable threading support
+        target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic)
         find_package(Threads REQUIRED)
         target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads)
     endif()
@@ -241,7 +252,6 @@ file(GLOB ONNXRUNTIME_DLLS "${ONNXRUNTIME_ROOT_PATH}/lib/*.dll")
 if(ONNXRUNTIME_DLLS)
     foreach(DLL ${ONNXRUNTIME_DLLS})
         get_filename_component(DLL_NAME ${DLL} NAME)
-        message(STATUS "Will copy DLL: ${DLL_NAME}")
         add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${DLL}
@@ -252,48 +262,6 @@ if(ONNXRUNTIME_DLLS)
     message(STATUS "ONNX Runtime DLLs will be copied to output directory")
 else()
     message(WARNING "No ONNX Runtime DLLs found in ${ONNXRUNTIME_ROOT_PATH}/lib/")
-    message(WARNING "Make sure to manually copy DLLs to the executable directory")
-endif()
-
-# Copy OpenCV DLLs if available
-if(OpenCV_FOUND)
-    # Try to find OpenCV DLLs in common locations
-    set(OPENCV_POSSIBLE_DLL_DIRS
-        "${OpenCV_DIR}/../bin"
-        "${OpenCV_DIR}/../../bin"
-        "${OpenCV_DIR}/../../../x64/vc16/bin"
-        "${OpenCV_DIR}/../../../x64/vc15/bin"
-        "${OpenCV_DIR}/../../../x64/vc14/bin"
-    )
-    
-    foreach(DLL_DIR ${OPENCV_POSSIBLE_DLL_DIRS})
-        if(EXISTS "${DLL_DIR}")
-            file(GLOB OPENCV_DLLS "${DLL_DIR}/opencv_*.dll")
-            if(OPENCV_DLLS)
-                message(STATUS "Found OpenCV DLLs in: ${DLL_DIR}")
-                foreach(DLL ${OPENCV_DLLS})
-                    get_filename_component(DLL_NAME ${DLL} NAME)
-                    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-                        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                        ${DLL}
-                        $<TARGET_FILE_DIR:${PROJECT_NAME}>
-                        COMMENT "Copying ${DLL_NAME} to output directory"
-                    )
-                endforeach()
-                break()
-            endif()
-        endif()
-    endforeach()
-endif()
-
-# Optional: Create test executable (if tests exist)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
-    file(GLOB_RECURSE TEST_SOURCES "tests/*.cpp")
-    if(TEST_SOURCES AND MODULAR_BUILD)
-        add_executable(${PROJECT_NAME}_tests ${TEST_SOURCES})
-        target_link_libraries(${PROJECT_NAME}_tests PRIVATE ${PROJECT_NAME}_lib)
-        message(STATUS "Test executable will be created")
-    endif()
 endif()
 
 # Optional: Create benchmark executable
@@ -301,60 +269,9 @@ if(MODULAR_BUILD)
     add_executable(${PROJECT_NAME}_benchmark src/main.cpp)
     target_link_libraries(${PROJECT_NAME}_benchmark PRIVATE ${PROJECT_NAME}_lib)
     target_compile_definitions(${PROJECT_NAME}_benchmark PRIVATE BENCHMARK_MODE)
-else()
-    # For single file builds, the main executable IS the benchmark
-    message(STATUS "Single file build - use main executable for benchmarking")
 endif()
 
-# Installation rules
-install(TARGETS ${PROJECT_NAME}
-    RUNTIME DESTINATION bin
-    COMPONENT applications
-)
-
-if(MODULAR_BUILD)
-    install(TARGETS ${PROJECT_NAME}_lib
-        ARCHIVE DESTINATION lib
-        COMPONENT libraries
-    )
-endif()
-
-if(ONNXRUNTIME_DLLS)
-    install(FILES ${ONNXRUNTIME_DLLS}
-        DESTINATION bin
-        COMPONENT runtime
-    )
-endif()
-
-# Create a configuration summary
-message(STATUS "")
-message(STATUS "=== Configuration Summary ===")
-message(STATUS "Project: ${PROJECT_NAME}")
-message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
-message(STATUS "C++ Standard: ${CMAKE_CXX_STANDARD}")
-message(STATUS "OpenCV version: ${OpenCV_VERSION}")
-message(STATUS "ONNX Runtime path: ${ONNXRUNTIME_ROOT_PATH}")
-message(STATUS "Platform: Windows (DirectX + GDI screen capture)")
-message(STATUS "GPU acceleration: ${ONNXRUNTIME_PROVIDERS_CUDA_LIB}")
-message(STATUS "Compiler: ${CMAKE_CXX_COMPILER_ID}")
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    message(STATUS "Optimizations: Enabled")
-else()
-    message(STATUS "Optimizations: Disabled (Debug mode)")
-endif()
-message(STATUS "=============================")
-message(STATUS "")
-
-# Add custom targets for convenience
-add_custom_target(clean-all
-    COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_BINARY_DIR}/CMakeFiles
-    COMMAND ${CMAKE_COMMAND} -E remove ${CMAKE_BINARY_DIR}/CMakeCache.txt
-    COMMAND ${CMAKE_COMMAND} -E remove ${CMAKE_BINARY_DIR}/cmake_install.cmake
-    COMMAND ${CMAKE_COMMAND} -E remove ${CMAKE_BINARY_DIR}/Makefile
-    COMMENT "Cleaning all generated files"
-)
-
-# Custom target to copy model file (independent of main target)
+# Custom target to copy model file
 add_custom_target(copy-model ALL
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
     ${CMAKE_CURRENT_SOURCE_DIR}/yolov8s_cs2.onnx
@@ -363,7 +280,6 @@ add_custom_target(copy-model ALL
     VERBATIM
 )
 
-# Also copy to the output directory after build
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
     ${CMAKE_CURRENT_SOURCE_DIR}/yolov8s_cs2.onnx
@@ -372,29 +288,17 @@ add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     VERBATIM
 )
 
-# Print build instructions
-message(STATUS "Build instructions:")
-if(CMAKE_GENERATOR MATCHES "Visual Studio")
-    message(STATUS "  1. Open ${PROJECT_NAME}.sln in Visual Studio")
-    message(STATUS "  2. Set Release configuration")
-    message(STATUS "  3. Build solution")
-else()
-    message(STATUS "  mkdir build && cd build")
-    message(STATUS "  cmake .. -DCMAKE_BUILD_TYPE=Release")
-    message(STATUS "  cmake --build . --config Release")
-endif()
-
+# Print configuration summary
 message(STATUS "")
+message(STATUS "=== FINAL CONFIGURATION SUMMARY ===")
+message(STATUS "Project: ${PROJECT_NAME}")
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "C++ Standard: ${CMAKE_CXX_STANDARD}")
+message(STATUS "OpenCV version: ${OpenCV_VERSION}")
+message(STATUS "ONNX Runtime path: ${ONNXRUNTIME_ROOT_PATH}")
+message(STATUS "Build mode: ${MODULAR_BUILD}")
 if(MODULAR_BUILD)
-    message(STATUS "Build mode: Modular (library + executable)")
-    message(STATUS "Usage examples:")
-    message(STATUS "  ${PROJECT_NAME}.exe --realtime")
-    message(STATUS "  ${PROJECT_NAME}.exe --benchmark 20")
-    message(STATUS "  ${PROJECT_NAME}.exe --conf 0.3 screenshot.jpg")
-else()
-    message(STATUS "Build mode: Single file")
-    message(STATUS "Usage examples:")
-    message(STATUS "  ${PROJECT_NAME}.exe --realtime")
-    message(STATUS "  ${PROJECT_NAME}.exe --benchmark 20")
-    message(STATUS "  ${PROJECT_NAME}.exe --conf 0.3 screenshot.jpg")
+    message(STATUS "Library sources: ${SOURCE_COUNT} files")
 endif()
+message(STATUS "=============================")
+message(STATUS "")
