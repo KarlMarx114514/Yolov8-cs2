@@ -14,16 +14,18 @@ MouseController::MouseController()
     : cs2_window(nullptr)
     , detection_window(nullptr)
     , is_active(false)
-    , debug_mode(true)
+    , debug_mode(false)  // Start with debug off for performance
     , use_raw_input(true)
     , force_absolute_mode(false)
-    , movement_steps(12)
-    , step_delay_ms(1)
+    , movement_steps(2)   // Reduced steps for faster movement
+    , step_delay_ms(0)    // No delay for maximum speed
     , target_offset_x(0.0f)
     , target_offset_y(-0.2f)
     , mouse_sensitivity_scale(3.0f)
     , cs2_process_id(0)
     , last_target(-1, -1)
+    , window_validated(false)
+    , last_window_check(std::chrono::steady_clock::now())
 {
     findCS2Window();
     calibrateMouseSensitivity();
@@ -31,30 +33,41 @@ MouseController::MouseController()
 
 void MouseController::setDetectionWindow(HWND window) {
     detection_window = window;
-    std::cout << "Detection window handle stored: " << window << std::endl;
+    if (debug_mode) {
+        std::cout << "Detection window handle stored: " << window << std::endl;
+    }
 }
 
 bool MouseController::isInGameplay() {
     if (!cs2_window) return false;
     
-    // Check window title for gameplay indicators
-    char title[256];
-    if (GetWindowTextA(cs2_window, title, sizeof(title))) {
-        std::string window_title(title);
-        
+    // Cache window title checks to avoid frequent WinAPI calls
+    static std::string cached_title;
+    static auto last_title_check = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_title_check).count() > 1000) {
+        char title[256];
+        if (GetWindowTextA(cs2_window, title, sizeof(title))) {
+            cached_title = title;
+            last_title_check = now;
+        }
+    }
+    
+    if (!cached_title.empty()) {
         // Menu indicators (use absolute positioning)
-        if (window_title.find("Menu") != std::string::npos ||
-            window_title.find("Main Menu") != std::string::npos ||
-            window_title.find("Loading") != std::string::npos) {
+        if (cached_title.find("Menu") != std::string::npos ||
+            cached_title.find("Main Menu") != std::string::npos ||
+            cached_title.find("Loading") != std::string::npos) {
             return false;
         }
         
         // Gameplay indicators (use raw input)
-        if (window_title.find("de_") != std::string::npos ||  // Map names
-            window_title.find("cs_") != std::string::npos ||
-            window_title.find("Competitive") != std::string::npos ||
-            window_title.find("Casual") != std::string::npos ||
-            window_title.find("Deathmatch") != std::string::npos) {
+        if (cached_title.find("de_") != std::string::npos ||  // Map names
+            cached_title.find("cs_") != std::string::npos ||
+            cached_title.find("Competitive") != std::string::npos ||
+            cached_title.find("Casual") != std::string::npos ||
+            cached_title.find("Deathmatch") != std::string::npos) {
             return true;
         }
     }
@@ -67,14 +80,18 @@ void MouseController::calibrateMouseSensitivity() {
     // Start with a more aggressive default for faster movement
     mouse_sensitivity_scale = 3.0f;
     
-    std::cout << "Mouse sensitivity scale: " << mouse_sensitivity_scale << std::endl;
-    std::cout << "Use +/- keys to adjust if movement feels too fast/slow" << std::endl;
-    std::cout << "Recommended range: 1.5-6.0 depending on your CS2 sensitivity" << std::endl;
+    if (debug_mode) {
+        std::cout << "Mouse sensitivity scale: " << mouse_sensitivity_scale << std::endl;
+        std::cout << "Use +/- keys to adjust if movement feels too fast/slow" << std::endl;
+        std::cout << "Recommended range: 1.5-6.0 depending on your CS2 sensitivity" << std::endl;
+    }
 }
 
 void MouseController::setSensitivity(float scale) {
     mouse_sensitivity_scale = scale;
-    std::cout << "Mouse sensitivity scale updated to: " << scale << std::endl;
+    if (debug_mode) {
+        std::cout << "Mouse sensitivity scale updated to: " << scale << std::endl;
+    }
 }
 
 void MouseController::setInputMethod(InputMethod method) {
@@ -82,19 +99,19 @@ void MouseController::setInputMethod(InputMethod method) {
         case InputMethod::RAW_INPUT_ONLY:
             use_raw_input = true;
             force_absolute_mode = false;
-            std::cout << "Input method: Raw input only (gameplay mode)" << std::endl;
+            if (debug_mode) std::cout << "Input method: Raw input only (gameplay mode)" << std::endl;
             break;
         case InputMethod::ABSOLUTE_ONLY:
             use_raw_input = false;
             force_absolute_mode = true;
-            std::cout << "Input method: Absolute positioning only (menu mode)" << std::endl;
+            if (debug_mode) std::cout << "Input method: Absolute positioning only (menu mode)" << std::endl;
             break;
         case InputMethod::AUTO_DETECT:
             force_absolute_mode = false;
-            std::cout << "Input method: Auto-detect based on game state" << std::endl;
+            if (debug_mode) std::cout << "Input method: Auto-detect based on game state" << std::endl;
             break;
         case InputMethod::HYBRID:
-            std::cout << "Input method: Hybrid (try both methods)" << std::endl;
+            if (debug_mode) std::cout << "Input method: Hybrid (try both methods)" << std::endl;
             break;
     }
 }
@@ -102,10 +119,9 @@ void MouseController::setInputMethod(InputMethod method) {
 bool MouseController::moveMouseRawInput(cv::Point2f target) {
     if (!cs2_window) return false;
     
-    // Get current cursor position
+    // Fast path - skip expensive operations in critical path
     POINT current_pos;
     if (!GetCursorPos(&current_pos)) {
-        std::cout << "Failed to get cursor position" << std::endl;
         return false;
     }
     
@@ -130,8 +146,8 @@ bool MouseController::moveMouseRawInput(cv::Point2f target) {
         return true;  // Already close enough
     }
     
-    // Break movement into smaller steps for smoother movement
-    int steps = std::min(movement_steps, static_cast<int>(distance / 5.0f) + 1);
+    // Optimized movement - fewer steps, no delays for maximum speed
+    int steps = std::min(movement_steps, std::max(1, static_cast<int>(distance / 20.0f)));
     cv::Point2f step_movement = movement / static_cast<float>(steps);
     
     for (int i = 0; i < steps; i++) {
@@ -147,13 +163,17 @@ bool MouseController::moveMouseRawInput(cv::Point2f target) {
         UINT result = SendInput(1, &input, sizeof(INPUT));
         
         if (result != 1) {
-            DWORD error = GetLastError();
-            std::cout << "SendInput failed at step " << i << ", error: " << error << std::endl;
+            if (debug_mode) {
+                DWORD error = GetLastError();
+                std::cout << "SendInput failed at step " << i << ", error: " << error << std::endl;
+            }
             return false;
         }
         
+        // Remove sleep for maximum responsiveness
+        // Only add minimal delay if explicitly configured
         if (step_delay_ms > 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(step_delay_ms));
+            std::this_thread::sleep_for(std::chrono::microseconds(step_delay_ms * 100));
         }
     }
     
@@ -174,12 +194,14 @@ bool MouseController::moveMouseRawInput(cv::Point2f target) {
 bool MouseController::moveMouseAbsolute(cv::Point2f target) {
     if (!cs2_window) return false;
     
-    // Validate target coordinates
-    int screen_width = GetSystemMetrics(SM_CXSCREEN);
-    int screen_height = GetSystemMetrics(SM_CYSCREEN);
+    // Fast validation - cache screen metrics
+    static int screen_width = GetSystemMetrics(SM_CXSCREEN);
+    static int screen_height = GetSystemMetrics(SM_CYSCREEN);
     
     if (target.x < 0 || target.y < 0 || target.x > screen_width || target.y > screen_height) {
-        std::cout << "Invalid target coordinates: " << target.x << "," << target.y << std::endl;
+        if (debug_mode) {
+            std::cout << "Invalid target coordinates: " << target.x << "," << target.y << std::endl;
+        }
         return false;
     }
     
@@ -201,8 +223,8 @@ bool MouseController::moveMouseAbsolute(cv::Point2f target) {
         return true;
     }
     
-    // Use fewer steps for menu interactions
-    int actual_steps = std::min(8, static_cast<int>(distance / 10.0f) + 1);
+    // Use fewer steps for faster menu interactions
+    int actual_steps = std::min(3, std::max(1, static_cast<int>(distance / 30.0f)));
     
     for (int i = 1; i <= actual_steps; i++) {
         cv::Point2f intermediate = start + diff * (static_cast<float>(i) / actual_steps);
@@ -210,12 +232,17 @@ bool MouseController::moveMouseAbsolute(cv::Point2f target) {
         bool result = SetCursorPos(static_cast<int>(intermediate.x), static_cast<int>(intermediate.y));
         
         if (!result) {
-            DWORD error = GetLastError();
-            std::cout << "SetCursorPos failed at step " << i << ", error: " << error << std::endl;
+            if (debug_mode) {
+                DWORD error = GetLastError();
+                std::cout << "SetCursorPos failed at step " << i << ", error: " << error << std::endl;
+            }
             return false;
         }
         
-        std::this_thread::sleep_for(std::chrono::milliseconds(step_delay_ms * 2));
+        // Minimal delay only if configured
+        if (step_delay_ms > 0) {
+            std::this_thread::sleep_for(std::chrono::microseconds(step_delay_ms * 500));
+        }
     }
     
     if (debug_mode) {
@@ -239,7 +266,9 @@ bool MouseController::moveMouseHybrid(cv::Point2f target) {
         return true;
     }
     
-    std::cout << "Raw input failed, trying absolute positioning..." << std::endl;
+    if (debug_mode) {
+        std::cout << "Raw input failed, trying absolute positioning..." << std::endl;
+    }
     
     // Fallback to absolute positioning (for menus)
     return moveMouseAbsolute(target);
@@ -250,12 +279,20 @@ void MouseController::smoothMoveTo(cv::Point2f target) {
         return;
     }
     
-    // Validate window state
-    if (!IsWindowVisible(cs2_window) || IsIconic(cs2_window)) {
-        if (debug_mode) {
-            std::cout << "CS2 window not visible or minimized" << std::endl;
+    // Fast window validation - only check periodically
+    auto now = std::chrono::steady_clock::now();
+    if (!window_validated || 
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - last_window_check).count() > 1000) {
+        
+        if (!IsWindowVisible(cs2_window) || IsIconic(cs2_window)) {
+            if (debug_mode) {
+                std::cout << "CS2 window not visible or minimized" << std::endl;
+            }
+            window_validated = false;
+            return;
         }
-        return;
+        window_validated = true;
+        last_window_check = now;
     }
     
     // Choose movement method based on game state and settings
@@ -339,12 +376,15 @@ void MouseController::testInputMethods() {
 }
 
 bool MouseController::findCS2Window() {
-    std::cout << "\n=== ENHANCED CS2 WINDOW DETECTION ===" << std::endl;
+    if (debug_mode) {
+        std::cout << "\n=== ENHANCED CS2 WINDOW DETECTION ===" << std::endl;
+    }
     
     // Reset previous state
     cs2_window = nullptr;
     cs2_process_id = 0;
     cs2_window_title.clear();
+    window_validated = false;
     
     struct WindowSearchData {
         HWND best_window;
@@ -407,12 +447,7 @@ bool MouseController::findCS2Window() {
                 if (width >= 1920 && height >= 1080) score += 15;
                 
                 if (score > 50) { // Threshold for CS2 candidates
-                    std::cout << "CS2 Candidate: '" << window_title 
-                              << "' [" << window_class << "] "
-                              << "(" << width << "x" << height << ") "
-                              << "PID:" << process_id << " Score:" << score << std::endl;
-                    
-                    if (score > 80 || (score >= 50 && !data->best_window)) {
+                    if (data->best_window == nullptr || score > 80) {
                         data->best_window = hwnd;
                         data->best_process_id = process_id;
                         data->best_title = window_title;
@@ -424,7 +459,9 @@ bool MouseController::findCS2Window() {
     }, reinterpret_cast<LPARAM>(&search_data));
     
     if (!search_data.best_window) {
-        std::cout << "No CS2 window found automatically!" << std::endl;
+        if (debug_mode) {
+            std::cout << "No CS2 window found automatically!" << std::endl;
+        }
         return false;
     }
     
@@ -438,13 +475,16 @@ bool MouseController::findCS2Window() {
         return false;
     }
     
-    std::cout << "CS2 Window Selected:" << std::endl;
-    std::cout << "  Title: '" << cs2_window_title << "'" << std::endl;
-    std::cout << "  HWND: " << cs2_window << std::endl;
-    std::cout << "  Process ID: " << cs2_process_id << std::endl;
-    std::cout << "  Gameplay detected: " << (isInGameplay() ? "Yes" : "No") << std::endl;
+    if (debug_mode) {
+        std::cout << "CS2 Window Selected:" << std::endl;
+        std::cout << "  Title: '" << cs2_window_title << "'" << std::endl;
+        std::cout << "  HWND: " << cs2_window << std::endl;
+        std::cout << "  Process ID: " << cs2_process_id << std::endl;
+        std::cout << "  Gameplay detected: " << (isInGameplay() ? "Yes" : "No") << std::endl;
+    }
     
     updateCaptureRegion();
+    window_validated = true;
     return true;
 }
 
@@ -485,21 +525,32 @@ void MouseController::updateCaptureRegion() {
 
 cv::Point2f MouseController::detectionToScreen(const cs2_detection::Detection& detection) {
     if (!cs2_window) {
-        std::cout << "ERROR: No CS2 window found!" << std::endl;
+        if (debug_mode) {
+            std::cout << "ERROR: No CS2 window found!" << std::endl;
+        }
         return cv::Point2f(0, 0);
     }
     
-    if (!validateCS2Window()) {
-        std::cout << "ERROR: CS2 window became invalid, attempting to find again..." << std::endl;
-        if (!findCS2Window()) {
-            return cv::Point2f(0, 0);
+    // Fast path - skip expensive validation in critical path
+    if (!window_validated) {
+        if (!validateCS2Window()) {
+            if (debug_mode) {
+                std::cout << "ERROR: CS2 window became invalid, attempting to find again..." << std::endl;
+            }
+            if (!findCS2Window()) {
+                return cv::Point2f(0, 0);
+            }
         }
+        window_validated = true;
     }
     
     RECT window_rect, client_rect;
     if (!GetWindowRect(cs2_window, &window_rect) || 
         !GetClientRect(cs2_window, &client_rect)) {
-        std::cout << "ERROR: Failed to get window rectangles!" << std::endl;
+        if (debug_mode) {
+            std::cout << "ERROR: Failed to get window rectangles!" << std::endl;
+        }
+        window_validated = false;
         return cv::Point2f(0, 0);
     }
     
@@ -509,7 +560,10 @@ cv::Point2f MouseController::detectionToScreen(const cs2_detection::Detection& d
     POINT client_point = { static_cast<LONG>(det_center_x), static_cast<LONG>(det_center_y) };
     
     if (!ClientToScreen(cs2_window, &client_point)) {
-        std::cout << "ERROR: ClientToScreen conversion failed!" << std::endl;
+        if (debug_mode) {
+            std::cout << "ERROR: ClientToScreen conversion failed!" << std::endl;
+        }
+        window_validated = false;
         return cv::Point2f(0, 0);
     }
     
@@ -522,7 +576,10 @@ bool MouseController::recheckCS2Window() {
     }
     
     if (!IsWindow(cs2_window)) {
-        std::cout << "CS2 window handle became invalid, searching again..." << std::endl;
+        if (debug_mode) {
+            std::cout << "CS2 window handle became invalid, searching again..." << std::endl;
+        }
+        window_validated = false;
         return findCS2Window();
     }
     
@@ -530,8 +587,10 @@ bool MouseController::recheckCS2Window() {
     if (GetWindowTextA(cs2_window, current_title, sizeof(current_title))) {
         std::string new_title(current_title);
         if (new_title != cs2_window_title) {
-            std::cout << "CS2 window title changed: '" << cs2_window_title 
-                      << "' -> '" << new_title << "'" << std::endl;
+            if (debug_mode) {
+                std::cout << "CS2 window title changed: '" << cs2_window_title 
+                          << "' -> '" << new_title << "'" << std::endl;
+            }
             cs2_window_title = new_title;
             updateCaptureRegion();
         }
@@ -587,15 +646,19 @@ void MouseController::aimAtTarget(const std::vector<cs2_detection::Detection>& d
 }
 
 void MouseController::setSmoothness(int steps, int delay_ms) {
-    movement_steps = steps;
-    step_delay_ms = delay_ms;
-    std::cout << "Mouse smoothness: " << steps << " steps, " << delay_ms << "ms delay" << std::endl;
+    movement_steps = std::max(1, std::min(steps, 5));  // Cap at 5 steps for speed
+    step_delay_ms = std::max(0, std::min(delay_ms, 2)); // Cap at 2ms for responsiveness
+    if (debug_mode) {
+        std::cout << "Mouse smoothness: " << movement_steps << " steps, " << step_delay_ms << "ms delay" << std::endl;
+    }
 }
 
 void MouseController::setTargetOffset(float offset_x, float offset_y) {
     target_offset_x = offset_x;
     target_offset_y = offset_y;
-    std::cout << "Target offset: " << offset_x << "," << offset_y << std::endl;
+    if (debug_mode) {
+        std::cout << "Target offset: " << offset_x << "," << offset_y << std::endl;
+    }
 }
 
 void MouseController::toggleDebugMode() {
@@ -632,18 +695,18 @@ void CS2MouseIntegration::processDetections(const std::vector<cs2_detection::Det
 }
 
 void CS2MouseIntegration::setupMouseControl() {
-    // Optimized settings for raw input - faster and more responsive
-    mouse_controller.setSmoothness(4, 0);  // Fewer steps, no delay for speed
+    // Optimized settings for maximum responsiveness
+    mouse_controller.setSmoothness(2, 0);  // Minimal steps, no delay
     mouse_controller.setTargetOffset(0.0f, -0.2f);
     mouse_controller.setInputMethod(MouseController::InputMethod::AUTO_DETECT);
     
     std::cout << "\n=== ENHANCED MOUSE CONTROL SETUP ===" << std::endl;
     std::cout << "Features:" << std::endl;
+    std::cout << "  Optimized for maximum responsiveness" << std::endl;
     std::cout << "  Raw input support for CS2 gameplay" << std::endl;
     std::cout << "  Absolute positioning for menus" << std::endl;
     std::cout << "  Auto-detection of game state" << std::endl;
     std::cout << "  Multiple input method fallbacks" << std::endl;
-    std::cout << "  Optimized for speed and responsiveness" << std::endl;
     std::cout << "\nControls:" << std::endl;
     std::cout << "  M = Toggle mouse control on/off" << std::endl;
     std::cout << "  V = Toggle debug mode" << std::endl;

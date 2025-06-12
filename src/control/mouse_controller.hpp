@@ -2,6 +2,7 @@
 #include "core/detection_types.hpp"
 #include <vector>
 #include <string>
+#include <chrono>
 #include <opencv2/opencv.hpp>
 
 #ifdef _WIN32
@@ -57,6 +58,10 @@ private:
     cv::Rect capture_region;
     bool is_active;
     bool debug_mode;
+    
+    // Performance optimization - window validation caching
+    bool window_validated;
+    std::chrono::steady_clock::time_point last_window_check;
     
     // Input method detection
     bool use_raw_input;
