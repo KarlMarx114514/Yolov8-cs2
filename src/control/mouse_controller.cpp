@@ -4,10 +4,62 @@
 #include <chrono>
 #include <algorithm>
 #include <limits>
+#include <iomanip>
 
 #ifdef _WIN32
 
 namespace cs2_control {
+
+// PID Controller implementation
+PIDController::PIDController(float kp, float ki, float kd) 
+    : kp_(kp), ki_(ki), kd_(kd), previous_error_(0, 0), integral_(0, 0), first_update_(true) {
+}
+
+cv::Point2f PIDController::update(cv::Point2f error, float dt) {
+    if (first_update_) {
+        previous_error_ = error;
+        first_update_ = false;
+        return error * kp_; // Only proportional term on first update
+    }
+    
+    // Proportional term
+    cv::Point2f proportional = error * kp_;
+    
+    // Integral term with windup protection
+    integral_ += error * dt;
+    
+    // Limit integral windup (prevent accumulation when error is large)
+    float integral_limit = 50.0f;
+    if (cv::norm(integral_) > integral_limit) {
+        integral_ = integral_ * (integral_limit / cv::norm(integral_));
+    }
+    cv::Point2f integral_term = integral_ * ki_;
+    
+    // Derivative term
+    cv::Point2f derivative = (error - previous_error_) / dt * kd_;
+    
+    previous_error_ = error;
+    
+    return proportional + integral_term + derivative;
+}
+
+void PIDController::reset() {
+    previous_error_ = cv::Point2f(0, 0);
+    integral_ = cv::Point2f(0, 0);
+    first_update_ = true;
+}
+
+void PIDController::setGains(float kp, float ki, float kd) {
+    kp_ = kp;
+    ki_ = ki;
+    kd_ = kd;
+}
+
+void PIDController::getGains(float& kp, float& ki, float& kd) const {
+    kp = kp_;
+    ki = ki_;
+    kd = kd_;
+}
 
 // MouseController implementation
 MouseController::MouseController() 
@@ -21,11 +73,14 @@ MouseController::MouseController()
     , step_delay_ms(0)    // No delay for maximum speed
     , target_offset_x(0.0f)
     , target_offset_y(-0.2f)
-    , mouse_sensitivity_scale(3.0f)
+    , mouse_sensitivity_scale(10.0f)
     , cs2_process_id(0)
     , last_target(-1, -1)
     , window_validated(false)
     , last_window_check(std::chrono::steady_clock::now())
+    , pid_controller_(0.01f, 0.03f, 0.0f)  // Optimized PID gains for mouse control
+    , pid_initialized_(false)
+    , current_position_(0, 0)
 {
     findCS2Window();
     calibrateMouseSensitivity();
@@ -36,6 +91,14 @@ void MouseController::setDetectionWindow(HWND window) {
     if (debug_mode) {
         std::cout << "Detection window handle stored: " << window << std::endl;
     }
+}
+
+cv::Point2f MouseController::getCurrentMousePosition() {
+    POINT current_pos;
+    if (GetCursorPos(&current_pos)) {
+        return cv::Point2f(static_cast<float>(current_pos.x), static_cast<float>(current_pos.y));
+    }
+    return current_position_; // Return cached position if GetCursorPos fails
 }
 
 bool MouseController::isInGameplay() {
@@ -295,35 +358,114 @@ void MouseController::smoothMoveTo(cv::Point2f target) {
         last_window_check = now;
     }
     
+    // Get current mouse position
+    current_position_ = getCurrentMousePosition();
+    
+    // Calculate error (distance to target)
+    cv::Point2f error = target - current_position_;
+    float error_magnitude = cv::norm(error);
+    
+    // Skip if already close enough (reduces oscillation)
+    if (error_magnitude < 2.0f) {
+        pid_controller_.reset(); // Reset PID when target is reached
+        return;
+    }
+    
+    // Calculate time delta for PID
+    auto current_time = std::chrono::high_resolution_clock::now();
+    float dt = 0.016f; // Default to ~60fps if not initialized
+    
+    if (pid_initialized_) {
+        auto time_diff = std::chrono::duration_cast<std::chrono::microseconds>(current_time - last_update_time_);
+        dt = time_diff.count() / 1000000.0f; // Convert to seconds
+        dt = std::max(0.001f, std::min(dt, 0.1f)); // Clamp dt to reasonable range
+    } else {
+        pid_initialized_ = true;
+        pid_controller_.reset();
+    }
+    last_update_time_ = current_time;
+    
+    // Get PID output
+    cv::Point2f pid_output = pid_controller_.update(error, dt);
+    
+    // Apply sensitivity scaling to PID output
+    pid_output *= mouse_sensitivity_scale;
+    
+    // Limit maximum movement per frame to prevent jumps
+    float max_movement = 50.0f;
+    if (cv::norm(pid_output) > max_movement) {
+        pid_output = pid_output * (max_movement / cv::norm(pid_output));
+    }
+    
+    // Calculate new target position based on PID output
+    cv::Point2f new_target = current_position_ + pid_output;
+    
+    if (debug_mode) {
+        std::cout << "PID Control - Error: " << error_magnitude 
+                  << ", Output: " << cv::norm(pid_output) << std::endl;
+    }
+    
     // Choose movement method based on game state and settings
     bool success = false;
     
     if (force_absolute_mode) {
         // Forced absolute mode (for testing menus)
-        success = moveMouseAbsolute(target);
+        success = moveMouseAbsolute(new_target);
     } else if (use_raw_input && isInGameplay()) {
         // Raw input for gameplay
         if (debug_mode) {
             std::cout << "Detected gameplay - using raw input" << std::endl;
         }
-        success = moveMouseRawInput(target);
+        success = moveMouseRawInput(new_target);
     } else if (!isInGameplay()) {
         // Absolute positioning for menus
         if (debug_mode) {
             std::cout << "Detected menu - using absolute positioning" << std::endl;
         }
-        success = moveMouseAbsolute(target);
+        success = moveMouseAbsolute(new_target);
     } else {
         // Hybrid approach when uncertain
-        success = moveMouseHybrid(target);
+        success = moveMouseHybrid(new_target);
     }
     
     if (!success && debug_mode) {
-        std::cout << "Mouse movement failed with current method" << std::endl;
+        std::cout << "PID mouse movement failed with current method" << std::endl;
     }
     
     // Store last target for relative movement calculations
     last_target = target;
+}
+
+void MouseController::adjustPIDGains(char adjustment) {
+    float kp, ki, kd;
+    pid_controller_.getGains(kp, ki, kd);
+    
+    float step = 0.05f;
+    
+    switch (adjustment) {
+        case 't': kp += step * 0.2f; break;
+        case 'y': kp = std::max(0.0f, kp - step * 0.2f); break;
+        case 'u': ki += step * 0.2f; break; // Smaller steps for integral
+        case 'i': ki = std::max(0.0f, ki - step * 0.2f); break;
+        case 'o': kd += step * 0.2f; break;
+        case 'l': kd = std::max(0.0f, kd - step * 0.2f); break;
+    }
+    
+    pid_controller_.setGains(kp, ki, kd);
+    printPIDStatus();
+}
+
+void MouseController::resetPID() {
+    pid_controller_.reset();
+    pid_initialized_ = false;
+    std::cout << "PID controller reset" << std::endl;
+}
+
+void MouseController::printPIDStatus() {
+    float kp, ki, kd;
+    pid_controller_.getGains(kp, ki, kd);
+    std::cout << "PID Gains - P: " << std::fixed << std::setprecision(3) << kp 
+              << ", I: " << ki << ", D: " << kd << std::endl;
 }
 
 void MouseController::testInputMethods() {
@@ -604,6 +746,7 @@ void MouseController::setActive(bool active) {
     std::cout << "\n=== MOUSE CONTROL " << (active ? "ACTIVATED" : "DEACTIVATED") << " ===" << std::endl;
     if (active) {
         findCS2Window();
+        resetPID(); // Reset PID when activating
     }
 }
 
@@ -700,28 +843,29 @@ void CS2MouseIntegration::setupMouseControl() {
     mouse_controller.setTargetOffset(0.0f, -0.2f);
     mouse_controller.setInputMethod(MouseController::InputMethod::AUTO_DETECT);
     
-    std::cout << "\n=== ENHANCED MOUSE CONTROL SETUP ===" << std::endl;
+    std::cout << "\n=== ENHANCED MOUSE CONTROL WITH PID ===" << std::endl;
     std::cout << "Features:" << std::endl;
-    std::cout << "  Optimized for maximum responsiveness" << std::endl;
+    std::cout << "  PID controller for smooth, stable aiming" << std::endl;
+    std::cout << "  Reduced oscillation and overshoot" << std::endl;
     std::cout << "  Raw input support for CS2 gameplay" << std::endl;
     std::cout << "  Absolute positioning for menus" << std::endl;
     std::cout << "  Auto-detection of game state" << std::endl;
-    std::cout << "  Multiple input method fallbacks" << std::endl;
     std::cout << "\nControls:" << std::endl;
     std::cout << "  M = Toggle mouse control on/off" << std::endl;
     std::cout << "  V = Toggle debug mode" << std::endl;
-    std::cout << "  C = Refresh window detection" << std::endl;
-    std::cout << "  X = Manual window selection" << std::endl;
-    std::cout << "  T = Test input methods" << std::endl;
-    std::cout << "  1 = Force raw input mode" << std::endl;
-    std::cout << "  2 = Force absolute mode" << std::endl;
-    std::cout << "  3 = Auto-detect mode" << std::endl;
+    std::cout << "  R = Reset PID controller" << std::endl;
+    std::cout << "  p/P = Increase/Decrease PID P-gain" << std::endl;
+    std::cout << "  i/I = Increase/Decrease PID I-gain" << std::endl;
+    std::cout << "  d/D = Increase/Decrease PID D-gain" << std::endl;
     std::cout << "  + = Increase sensitivity (currently 3.0x)" << std::endl;
     std::cout << "  - = Decrease sensitivity" << std::endl;
-    std::cout << "  4 = Fast preset (6.0x)" << std::endl;
-    std::cout << "  5 = Medium preset (3.0x)" << std::endl;
-    std::cout << "  6 = Slow preset (1.5x)" << std::endl;
-    std::cout << "\nTIP: Use +/- to fine-tune or 4/5/6 for quick presets!" << std::endl;
+    std::cout << "  4/5/6 = Fast/Medium/Slow presets" << std::endl;
+    std::cout << "\nPID Tips:" << std::endl;
+    std::cout << "  P-gain: Higher = faster response, too high = oscillation" << std::endl;
+    std::cout << "  I-gain: Eliminates steady-state error, too high = instability" << std::endl;
+    std::cout << "  D-gain: Reduces overshoot, too high = noise sensitivity" << std::endl;
+    
+    mouse_controller.printPIDStatus();
 }
 
 void CS2MouseIntegration::setDetectionWindowHandle(HWND window_handle) {
@@ -771,10 +915,10 @@ void CS2MouseIntegration::setInputMode(int mode) {
 void CS2MouseIntegration::adjustSensitivity(bool increase) {
     static float current_sensitivity = 3.0f;  // Start with the new default
     if (increase) {
-        current_sensitivity += 0.5f;  // Larger increments for faster adjustment
+        current_sensitivity += 0.1f;  // Larger increments for faster adjustment
         current_sensitivity = std::min(10.0f, current_sensitivity);  // Cap at 10x
     } else {
-        current_sensitivity -= 0.5f;
+        current_sensitivity -= 0.1f;
         current_sensitivity = std::max(0.2f, current_sensitivity);  // Min 0.2x
     }
     mouse_controller.setSensitivity(current_sensitivity);
@@ -788,6 +932,14 @@ void CS2MouseIntegration::setSensitivityPreset(float sensitivity) {
 
 void CS2MouseIntegration::toggleDebugMode() {
     mouse_controller.toggleDebugMode();
+}
+
+void CS2MouseIntegration::adjustPIDGains(char adjustment) {
+    mouse_controller.adjustPIDGains(adjustment);
+}
+
+void CS2MouseIntegration::resetPID() {
+    mouse_controller.resetPID();
 }
 
 } // namespace cs2_control

@@ -46,6 +46,7 @@ struct DetectionFrame {
  * - Lock-free queues with size limits to prevent memory buildup
  * - Thread priorities to ensure mouse responsiveness
  * - Minimal synchronization overhead
+ * - PID controller for smooth, stable mouse movement
  */
 class CS2RealTimeDetector {
 public:

@@ -9,6 +9,22 @@
 #include <windows.h>
 
 namespace cs2_control {
+
+// PID Controller for smooth mouse movement
+class PIDController {
+public:
+    PIDController(float kp = 1.0f, float ki = 0.0f, float kd = 0.1f);
+    cv::Point2f update(cv::Point2f error, float dt);
+    void reset();
+    void setGains(float kp, float ki, float kd);
+    void getGains(float& kp, float& ki, float& kd) const;
+    
+private:
+    float kp_, ki_, kd_;
+    cv::Point2f previous_error_;
+    cv::Point2f integral_;
+    bool first_update_;
+};
     
 class MouseController {
 public:
@@ -39,6 +55,11 @@ public:
     void setSmoothness(int steps, int delay_ms);
     void setTargetOffset(float offset_x, float offset_y);
     void setDetectionWindow(HWND window);
+    
+    // PID Controller configuration
+    void adjustPIDGains(char adjustment); // 'p', 'i', 'd' for increase, 'P', 'I', 'D' for decrease
+    void resetPID();
+    void printPIDStatus();
     
     // Window management
     bool findCS2Window();
@@ -78,12 +99,18 @@ private:
     // Mouse sensitivity calibration
     float mouse_sensitivity_scale;
     
-    // Window validation
-    DWORD cs2_process_id;
-    std::string cs2_window_title;
+    // PID Controller for smooth movement
+    PIDController pid_controller_;
+    std::chrono::high_resolution_clock::time_point last_update_time_;
+    bool pid_initialized_;
     
     // Movement tracking for relative input
     cv::Point2f last_target;
+    cv::Point2f current_position_;
+    
+    // Window validation
+    DWORD cs2_process_id;
+    std::string cs2_window_title;
     
     // Private methods
     bool validateCS2Window();
@@ -97,6 +124,7 @@ private:
     cs2_detection::Detection selectTarget(const std::vector<cs2_detection::Detection>& detections, 
                                         TargetPriority priority);
     void calibrateMouseSensitivity();
+    cv::Point2f getCurrentMousePosition();
 };
 
 class CS2MouseIntegration {
@@ -114,6 +142,8 @@ public:
     void adjustSensitivity(bool increase);
     void setSensitivityPreset(float sensitivity);
     void toggleDebugMode();
+    void adjustPIDGains(char adjustment);
+    void resetPID();
     
 private:
     MouseController mouse_controller;

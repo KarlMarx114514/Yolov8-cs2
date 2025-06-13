@@ -313,6 +313,10 @@ void CS2RealTimeDetector::handleDisplayAndInput(bool save_results) {
             mouse_integration.toggleMouseControl();
         } else if (key == 'v' || key == 'V') { // Debug mode
             mouse_integration.toggleDebugMode();
+        } else if (key == 'r' || key == 'R') { // Reset PID
+            mouse_integration.resetPID();
+        } else if (key == 't' || key == 'y' || key == 'u' || key == 'i' || key == 'o' || key == 'l') { // PID adjustments
+            mouse_integration.adjustPIDGains(key);
         } else if (key == 'c' || key == 'C') { // Refresh window detection
             mouse_integration.refreshWindowDetection();
         } else if (key == 'x' || key == 'X') { // Manual window selection
@@ -367,6 +371,10 @@ void CS2RealTimeDetector::printControls() {
     std::cout << "  D: Toggle display on/off" << std::endl;
     std::cout << "  M: Toggle mouse control on/off" << std::endl;
     std::cout << "  V: Toggle debug mode" << std::endl;
+    std::cout << "  R: Reset PID controller" << std::endl;
+    std::cout << "  t/y: Increase/Decrease PID P-gain" << std::endl;
+    std::cout << "  u/i: Increase/Decrease PID I-gain" << std::endl;
+    std::cout << "  o/l: Increase/Decrease PID D-gain" << std::endl;
     std::cout << "  C: Refresh window detection" << std::endl;
     std::cout << "  X: Manual window selection" << std::endl;
     std::cout << "  T: Test input methods" << std::endl;
