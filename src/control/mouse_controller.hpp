@@ -61,6 +61,11 @@ public:
     Team getPlayerTeam() const { return player_team_; }
     void toggleTeam();
     
+    // Auto-fire management
+    void setAutoFire(bool enabled);
+    bool getAutoFire() const { return auto_fire_enabled_; }
+    void toggleAutoFire();
+    
     // Configuration
     void setSensitivity(float scale);
     void setInputMethod(InputMethod method);
@@ -96,6 +101,12 @@ private:
     Team player_team_;
     cs2_detection::Detection current_target_;
     float target_switch_threshold_;
+    
+    // Auto-fire system
+    bool auto_fire_enabled_;
+    std::chrono::high_resolution_clock::time_point last_fire_time_;
+    float fire_cooldown_ms_;
+    float fire_distance_threshold_;
     
     // Performance optimization - window validation caching
     bool window_validated;
@@ -152,6 +163,10 @@ private:
     bool isEnemyTarget(const cs2_detection::Detection& detection);
     bool hasHelmet(const cs2_detection::Detection& detection);
     float calculateTargetPriority(const cs2_detection::Detection& detection, cv::Point2f screen_center);
+    
+    // Auto-fire functionality
+    void checkAndFire(cv::Point2f target_position);
+    void performSingleShot();
 };
 
 class CS2MouseIntegration {
@@ -173,6 +188,7 @@ public:
     void resetPID();
     void setPlayerTeam(Team team);
     void toggleTeam();
+    void toggleAutoFire();
     
 private:
     MouseController mouse_controller;

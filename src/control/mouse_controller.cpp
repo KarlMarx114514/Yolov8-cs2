@@ -69,6 +69,9 @@ MouseController::MouseController()
     , debug_mode(false)  // Start with debug off for performance
     , player_team_(Team::NONE)
     , target_switch_threshold_(0.05f)  // 5% threshold for target switching
+    , auto_fire_enabled_(false)
+    , fire_cooldown_ms_(800.0f)  // 0.8 seconds
+    , fire_distance_threshold_(15.0f)  // pixels - very close to target
     , use_raw_input(true)
     , force_absolute_mode(false)
     , movement_steps(2)   // Reduced steps for faster movement
@@ -80,7 +83,7 @@ MouseController::MouseController()
     , last_target(-1, -1)
     , window_validated(false)
     , last_window_check(std::chrono::steady_clock::now())
-    , pid_controller_(0.83f, 3.84f, 0.01f)  // Optimized PID gains for mouse control
+    , pid_controller_(0.84f, 3.84f, 0.01f)  // Optimized PID gains for mouse control
     , pid_initialized_(false)
     , direct_move_done_(false)
     , last_target_position_(-1, -1)
@@ -504,6 +507,9 @@ void MouseController::smoothMoveTo(cv::Point2f target) {
     // Phase 2: PID control for fine adjustment
     cv::Point2f error = target - current_position_;
     float error_magnitude = cv::norm(error);
+    
+    // Check for auto-fire when we're close to target
+    checkAndFire(target);
     
     // Skip if already close enough (reduces oscillation)
     if (error_magnitude < 2.0f) {
@@ -1061,6 +1067,7 @@ void CS2MouseIntegration::setupMouseControl() {
     std::cout << "  Z = Set team to CT" << std::endl;
     std::cout << "  X = Set team to T" << std::endl;
     std::cout << "  B = Toggle team" << std::endl;
+    std::cout << "  F = Toggle auto-fire on/off" << std::endl;
     std::cout << "\nPID Tips:" << std::endl;
     std::cout << "  P-gain: Higher = faster response, too high = oscillation" << std::endl;
     std::cout << "  I-gain: Eliminates steady-state error, too high = instability" << std::endl;
@@ -1070,6 +1077,10 @@ void CS2MouseIntegration::setupMouseControl() {
     std::cout << "  Only enemy targets will be aimed at" << std::endl;
     std::cout << "  Helmet targets get priority boost" << std::endl;
     std::cout << "  5% threshold prevents target switching spam" << std::endl;
+    std::cout << "\nAuto-Fire:" << std::endl;
+    std::cout << "  Press F to enable/disable auto-fire" << std::endl;
+    std::cout << "  Fires when within 15 pixels of target" << std::endl;
+    std::cout << "  0.8 second cooldown between shots" << std::endl;
     
     mouse_controller.printPIDStatus();
 }
@@ -1152,8 +1163,93 @@ void CS2MouseIntegration::setPlayerTeam(Team team) {
     mouse_controller.setPlayerTeam(team);
 }
 
+void MouseController::setAutoFire(bool enabled) {
+    auto_fire_enabled_ = enabled;
+    std::cout << "Auto-fire: " << (enabled ? "ENABLED" : "DISABLED") << std::endl;
+    if (enabled) {
+        std::cout << "Will fire when within " << fire_distance_threshold_ << " pixels of target" << std::endl;
+        std::cout << "Fire cooldown: " << fire_cooldown_ms_ << "ms" << std::endl;
+    }
+}
+
+void MouseController::toggleAutoFire() {
+    setAutoFire(!auto_fire_enabled_);
+}
+
+void MouseController::performSingleShot() {
+    if (!cs2_window) return;
+    
+    // Send mouse left click down
+    INPUT input_down = {};
+    input_down.type = INPUT_MOUSE;
+    input_down.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    input_down.mi.dx = 0;
+    input_down.mi.dy = 0;
+    input_down.mi.dwExtraInfo = 0;
+    input_down.mi.mouseData = 0;
+    input_down.mi.time = 0;
+    
+    // Send mouse left click up
+    INPUT input_up = {};
+    input_up.type = INPUT_MOUSE;
+    input_up.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+    input_up.mi.dx = 0;
+    input_up.mi.dy = 0;
+    input_up.mi.dwExtraInfo = 0;
+    input_up.mi.mouseData = 0;
+    input_up.mi.time = 0;
+    
+    // Send both inputs as a single shot
+    INPUT inputs[2] = {input_down, input_up};
+    UINT result = SendInput(2, inputs, sizeof(INPUT));
+    
+    if (debug_mode) {
+        if (result == 2) {
+            std::cout << "Auto-fire: Shot fired!" << std::endl;
+        } else {
+            std::cout << "Auto-fire: Failed to send click input" << std::endl;
+        }
+    }
+    
+    // Update last fire time
+    last_fire_time_ = std::chrono::high_resolution_clock::now();
+}
+
+void MouseController::checkAndFire(cv::Point2f target_position) {
+    if (!auto_fire_enabled_ || !cs2_window) {
+        return;
+    }
+    
+    // Check if we're close enough to target
+    cv::Point2f current_pos = getCurrentMousePosition();
+    float distance_to_target = cv::norm(target_position - current_pos);
+    
+    if (distance_to_target > fire_distance_threshold_) {
+        return; // Too far from target
+    }
+    
+    // Check cooldown
+    auto now = std::chrono::high_resolution_clock::now();
+    auto time_since_last_fire = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_fire_time_);
+    
+    if (time_since_last_fire.count() < fire_cooldown_ms_) {
+        return; // Still in cooldown
+    }
+    
+    // Fire!
+    performSingleShot();
+    
+    if (debug_mode) {
+        std::cout << "Auto-fire triggered at distance: " << distance_to_target << " pixels" << std::endl;
+    }
+}
+
 void CS2MouseIntegration::toggleTeam() {
     mouse_controller.toggleTeam();
+}
+
+void CS2MouseIntegration::toggleAutoFire() {
+    mouse_controller.toggleAutoFire();
 }
 
 } // namespace cs2_control

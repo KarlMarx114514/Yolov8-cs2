@@ -329,6 +329,8 @@ void CS2RealTimeDetector::handleDisplayAndInput(bool save_results) {
             mouse_integration.setPlayerTeam(cs2_control::Team::T);
         } else if (key == 'b' || key == 'B') { // Toggle team
             mouse_integration.toggleTeam();
+        } else if (key == 'f' || key == 'F') { // Toggle auto-fire
+            mouse_integration.toggleAutoFire();
         } else if (key == '1') { // Force raw input mode
             mouse_integration.setInputMode(1);
         } else if (key == '2') { // Force absolute mode
@@ -392,6 +394,7 @@ void CS2RealTimeDetector::printControls() {
     std::cout << "  Z: Set team to CT (target T/T+Helmet)" << std::endl;
     std::cout << "  X: Set team to T (target CT/CT+Helmet)" << std::endl;
     std::cout << "  B: Toggle between teams" << std::endl;
+    std::cout << "  F: Toggle auto-fire on/off" << std::endl;
 }
 
 void CS2RealTimeDetector::printLiveStats() {
