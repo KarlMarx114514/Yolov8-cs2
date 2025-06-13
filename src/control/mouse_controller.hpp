@@ -121,6 +121,10 @@ private:
     std::chrono::high_resolution_clock::time_point last_update_time_;
     bool pid_initialized_;
     
+    // Direct movement tracking
+    bool direct_move_done_;
+    cv::Point2f last_target_position_;
+    
     // Movement tracking for relative input
     cv::Point2f last_target;
     cv::Point2f current_position_;

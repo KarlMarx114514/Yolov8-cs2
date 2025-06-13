@@ -68,7 +68,7 @@ MouseController::MouseController()
     , is_active(false)
     , debug_mode(false)  // Start with debug off for performance
     , player_team_(Team::NONE)
-    , target_switch_threshold_(0.2f)  // 5% threshold for target switching
+    , target_switch_threshold_(0.05f)  // 5% threshold for target switching
     , use_raw_input(true)
     , force_absolute_mode(false)
     , movement_steps(2)   // Reduced steps for faster movement
@@ -80,8 +80,10 @@ MouseController::MouseController()
     , last_target(-1, -1)
     , window_validated(false)
     , last_window_check(std::chrono::steady_clock::now())
-    , pid_controller_(8.0f, 0.0f, 0.0f)  // Optimized PID gains for mouse control
+    , pid_controller_(0.83f, 3.84f, 0.01f)  // Optimized PID gains for mouse control
     , pid_initialized_(false)
+    , direct_move_done_(false)
+    , last_target_position_(-1, -1)
     , current_position_(0, 0)
 {
     findCS2Window();
@@ -444,13 +446,67 @@ void MouseController::smoothMoveTo(cv::Point2f target) {
     // Get current mouse position
     current_position_ = getCurrentMousePosition();
     
-    // Calculate error (distance to target)
+    // Check if this is a new target (different from last target position)
+    float target_distance_threshold = 50.0f; // pixels
+    bool is_new_target = (cv::norm(target - last_target_position_) > target_distance_threshold);
+    
+    if (is_new_target) {
+        // Reset for new target
+        direct_move_done_ = false;
+        last_target_position_ = target;
+        pid_controller_.reset();
+        pid_initialized_ = false;
+        
+        if (debug_mode) {
+            std::cout << "New target detected, will do direct move first" << std::endl;
+        }
+    }
+    
+    // Phase 1: Direct movement (only once per target)
+    if (!direct_move_done_) {
+        cv::Point2f error = target - current_position_;
+        float error_magnitude = cv::norm(error);
+        
+        if (error_magnitude > 5.0f) { // Only do direct move if we're far enough
+            // Calculate direct movement - move a percentage of the way toward target
+            float direct_move_factor = 0.6f; // Move 60% of the way toward target
+            cv::Point2f direct_target = current_position_ + error * direct_move_factor;
+            
+            if (debug_mode) {
+                std::cout << "Direct move: " << error_magnitude << " pixels to target" << std::endl;
+            }
+            
+            // Choose movement method based on game state and settings
+            bool success = false;
+            
+            if (force_absolute_mode) {
+                success = moveMouseAbsolute(direct_target);
+            } else if (use_raw_input && isInGameplay()) {
+                success = moveMouseRawInput(direct_target);
+            } else if (!isInGameplay()) {
+                success = moveMouseAbsolute(direct_target);
+            } else {
+                success = moveMouseHybrid(direct_target);
+            }
+            
+            if (!success && debug_mode) {
+                std::cout << "Direct mouse movement failed" << std::endl;
+            }
+        }
+        
+        direct_move_done_ = true;
+        if (debug_mode) {
+            std::cout << "Direct move completed, switching to PID control" << std::endl;
+        }
+        return; // Exit after direct move
+    }
+    
+    // Phase 2: PID control for fine adjustment
     cv::Point2f error = target - current_position_;
     float error_magnitude = cv::norm(error);
     
     // Skip if already close enough (reduces oscillation)
     if (error_magnitude < 2.0f) {
-        pid_controller_.reset(); // Reset PID when target is reached
         return;
     }
     
@@ -475,7 +531,7 @@ void MouseController::smoothMoveTo(cv::Point2f target) {
     pid_output *= mouse_sensitivity_scale;
     
     // Limit maximum movement per frame to prevent jumps
-    float max_movement = 50.0f;
+    float max_movement = 30.0f; // Reduced for finer control during PID phase
     if (cv::norm(pid_output) > max_movement) {
         pid_output = pid_output * (max_movement / cv::norm(pid_output));
     }
@@ -492,22 +548,12 @@ void MouseController::smoothMoveTo(cv::Point2f target) {
     bool success = false;
     
     if (force_absolute_mode) {
-        // Forced absolute mode (for testing menus)
         success = moveMouseAbsolute(new_target);
     } else if (use_raw_input && isInGameplay()) {
-        // Raw input for gameplay
-        if (debug_mode) {
-            std::cout << "Detected gameplay - using raw input" << std::endl;
-        }
         success = moveMouseRawInput(new_target);
     } else if (!isInGameplay()) {
-        // Absolute positioning for menus
-        if (debug_mode) {
-            std::cout << "Detected menu - using absolute positioning" << std::endl;
-        }
         success = moveMouseAbsolute(new_target);
     } else {
-        // Hybrid approach when uncertain
         success = moveMouseHybrid(new_target);
     }
     
@@ -541,7 +587,9 @@ void MouseController::adjustPIDGains(char adjustment) {
 void MouseController::resetPID() {
     pid_controller_.reset();
     pid_initialized_ = false;
-    std::cout << "PID controller reset" << std::endl;
+    direct_move_done_ = false; // Reset direct move flag too
+    last_target_position_ = cv::Point2f(-1, -1);
+    std::cout << "PID controller and direct move state reset" << std::endl;
 }
 
 void MouseController::printPIDStatus() {
