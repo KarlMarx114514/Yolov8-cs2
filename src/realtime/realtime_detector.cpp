@@ -319,10 +319,16 @@ void CS2RealTimeDetector::handleDisplayAndInput(bool save_results) {
             mouse_integration.adjustPIDGains(key);
         } else if (key == 'c' || key == 'C') { // Refresh window detection
             mouse_integration.refreshWindowDetection();
-        } else if (key == 'x' || key == 'X') { // Manual window selection
+        } else if (key == 'w' || key == 'W') { // Manual window selection (changed from X to avoid conflict)
             mouse_integration.manualWindowSelection();
-        } else if (key == 't' || key == 'T') { // Test input methods
+        } else if (key == 'n' || key == 'N') { // Test input methods (changed from T to avoid conflict)
             mouse_integration.testInputMethods();
+        } else if (key == 'z' || key == 'Z') { // Set team to CT
+            mouse_integration.setPlayerTeam(cs2_control::Team::CT);
+        } else if (key == 'x' || key == 'X') { // Set team to T
+            mouse_integration.setPlayerTeam(cs2_control::Team::T);
+        } else if (key == 'b' || key == 'B') { // Toggle team
+            mouse_integration.toggleTeam();
         } else if (key == '1') { // Force raw input mode
             mouse_integration.setInputMode(1);
         } else if (key == '2') { // Force absolute mode
@@ -376,13 +382,16 @@ void CS2RealTimeDetector::printControls() {
     std::cout << "  u/i: Increase/Decrease PID I-gain" << std::endl;
     std::cout << "  o/l: Increase/Decrease PID D-gain" << std::endl;
     std::cout << "  C: Refresh window detection" << std::endl;
-    std::cout << "  X: Manual window selection" << std::endl;
-    std::cout << "  T: Test input methods" << std::endl;
+    std::cout << "  W: Manual window selection" << std::endl;
+    std::cout << "  N: Test input methods" << std::endl;
     std::cout << "  1: Force raw input mode" << std::endl;
     std::cout << "  2: Force absolute mode" << std::endl;
     std::cout << "  3: Auto-detect mode" << std::endl;
     std::cout << "  +/-: Adjust sensitivity" << std::endl;
     std::cout << "  4/5/6: Fast/Medium/Slow presets" << std::endl;
+    std::cout << "  Z: Set team to CT (target T/T+Helmet)" << std::endl;
+    std::cout << "  X: Set team to T (target CT/CT+Helmet)" << std::endl;
+    std::cout << "  B: Toggle between teams" << std::endl;
 }
 
 void CS2RealTimeDetector::printLiveStats() {

@@ -67,6 +67,8 @@ MouseController::MouseController()
     , detection_window(nullptr)
     , is_active(false)
     , debug_mode(false)  // Start with debug off for performance
+    , player_team_(Team::NONE)
+    , target_switch_threshold_(0.2f)  // 5% threshold for target switching
     , use_raw_input(true)
     , force_absolute_mode(false)
     , movement_steps(2)   // Reduced steps for faster movement
@@ -84,6 +86,87 @@ MouseController::MouseController()
 {
     findCS2Window();
     calibrateMouseSensitivity();
+    
+    // Initialize empty current target
+    current_target_.confidence = 0.0f;
+    current_target_.class_id = -1;
+}
+
+void MouseController::setPlayerTeam(Team team) {
+    player_team_ = team;
+    current_target_.confidence = 0.0f; // Reset current target when team changes
+    
+    std::string team_name = (team == Team::CT) ? "CT" : (team == Team::T) ? "T" : "NONE";
+    std::cout << "Player team set to: " << team_name << std::endl;
+    if (debug_mode && team != Team::NONE) {
+        std::cout << "Now targeting: " << ((team == Team::CT) ? "T and T+Helmet" : "CT and CT+Helmet") << std::endl;
+    }
+}
+
+void MouseController::toggleTeam() {
+    if (player_team_ == Team::CT) {
+        setPlayerTeam(Team::T);
+    } else if (player_team_ == Team::T) {
+        setPlayerTeam(Team::CT);
+    } else {
+        setPlayerTeam(Team::CT); // Default to CT if none selected
+    }
+}
+
+std::vector<cs2_detection::Detection> MouseController::filterEnemyTargets(const std::vector<cs2_detection::Detection>& detections) {
+    if (player_team_ == Team::NONE) {
+        return detections; // Return all if no team set
+    }
+    
+    std::vector<cs2_detection::Detection> enemies;
+    for (const auto& detection : detections) {
+        if (isEnemyTarget(detection)) {
+            enemies.push_back(detection);
+        }
+    }
+    
+    if (debug_mode && !enemies.empty()) {
+        std::cout << "Filtered " << enemies.size() << " enemy targets from " << detections.size() << " total detections" << std::endl;
+    }
+    
+    return enemies;
+}
+
+bool MouseController::isEnemyTarget(const cs2_detection::Detection& detection) {
+    if (player_team_ == Team::NONE) {
+        return true; // Target all if no team set
+    }
+    
+    // Class IDs: 0=CT, 1=CT+Helmet, 2=T, 3=T+Helmet
+    if (player_team_ == Team::CT) {
+        return detection.class_id == 2 || detection.class_id == 3; // Target T and T+Helmet
+    } else if (player_team_ == Team::T) {
+        return detection.class_id == 0 || detection.class_id == 1; // Target CT and CT+Helmet
+    }
+    
+    return false;
+}
+
+bool MouseController::hasHelmet(const cs2_detection::Detection& detection) {
+    return detection.class_id == 1 || detection.class_id == 3; // CT+Helmet or T+Helmet
+}
+
+float MouseController::calculateTargetPriority(const cs2_detection::Detection& detection, cv::Point2f screen_center) {
+    float priority = detection.confidence;
+    
+    // Helmet targets get significant priority boost
+    if (hasHelmet(detection)) {
+        priority += 0.3f; // 30% boost for helmet targets
+    }
+    
+    // Distance factor (closer to center gets slight boost)
+    cv::Point2f det_center(detection.bbox.x + detection.bbox.width / 2.0f,
+                          detection.bbox.y + detection.bbox.height / 2.0f);
+    float distance = static_cast<float>(cv::norm(det_center - screen_center));
+    float normalized_distance = distance / (screen_center.x + screen_center.y); // Rough normalization
+    priority += (1.0f - normalized_distance) * 0.1f; // Small distance boost
+    
+    return priority;
 }
 
 void MouseController::setDetectionWindow(HWND window) {
@@ -752,16 +835,80 @@ void MouseController::setActive(bool active) {
 
 cs2_detection::Detection MouseController::selectTarget(const std::vector<cs2_detection::Detection>& detections, 
                                     TargetPriority priority) {
-    if (detections.empty()) return {};
+    // Filter enemy targets first
+    std::vector<cs2_detection::Detection> enemy_targets = filterEnemyTargets(detections);
+    
+    if (enemy_targets.empty()) {
+        cs2_detection::Detection empty_target;
+        empty_target.confidence = 0.0f;
+        return empty_target;
+    }
     
     cv::Point2f screen_center(static_cast<float>(capture_region.width) / 2.0f, 
                             static_cast<float>(capture_region.height) / 2.0f);
-    float min_distance = std::numeric_limits<float>::max();
+    
+    // Find the best target based on priority calculation
+    float best_priority = -1.0f;
     size_t best_idx = 0;
     
-    for (size_t i = 0; i < detections.size(); i++) {
-        cv::Point2f det_center(detections[i].bbox.x + detections[i].bbox.width / 2.0f,
-                             detections[i].bbox.y + detections[i].bbox.height / 2.0f);
+    for (size_t i = 0; i < enemy_targets.size(); i++) {
+        float target_priority = calculateTargetPriority(enemy_targets[i], screen_center);
+        
+        // Apply target switching threshold only if we have a current target
+        bool should_consider = true;
+        if (current_target_.confidence > 0.0f) {
+            float current_priority = calculateTargetPriority(current_target_, screen_center);
+            // Only consider switching if new target is significantly better
+            should_consider = (target_priority > current_priority + target_switch_threshold_);
+        }
+        
+        if (should_consider && target_priority > best_priority) {
+            best_priority = target_priority;
+            best_idx = i;
+        }
+    }
+    
+    // If we found a valid target, update current target
+    if (best_priority > -1.0f) {
+        current_target_ = enemy_targets[best_idx];
+        
+        if (debug_mode) {
+            std::string target_type = hasHelmet(current_target_) ? " (HELMET)" : "";
+            std::cout << "Selected target: " << current_target_.class_name << target_type 
+                      << " (conf: " << current_target_.confidence << ", priority: " << best_priority << ")" << std::endl;
+        }
+        
+        return current_target_;
+    }
+    
+    // If no new target found but we have a current target, keep using it
+    if (current_target_.confidence > 0.0f) {
+        // Check if current target is still in the detection list
+        for (const auto& detection : enemy_targets) {
+            cv::Point2f current_center(current_target_.bbox.x + current_target_.bbox.width / 2.0f,
+                                      current_target_.bbox.y + current_target_.bbox.height / 2.0f);
+            cv::Point2f det_center(detection.bbox.x + detection.bbox.width / 2.0f,
+                                  detection.bbox.y + detection.bbox.height / 2.0f);
+            float distance = cv::norm(current_center - det_center);
+            
+            // If we find the same target, update it with fresh data
+            if (distance < 100.0f && detection.class_id == current_target_.class_id) {
+                current_target_ = detection;
+                return current_target_;
+            }
+        }
+        
+        // Current target not found in new detections, clear it
+        current_target_.confidence = 0.0f;
+    }
+    
+    // Fallback: if no smart target found, use original simple logic (closest to center)
+    float min_distance = std::numeric_limits<float>::max();
+    best_idx = 0;
+    
+    for (size_t i = 0; i < enemy_targets.size(); i++) {
+        cv::Point2f det_center(enemy_targets[i].bbox.x + enemy_targets[i].bbox.width / 2.0f,
+                             enemy_targets[i].bbox.y + enemy_targets[i].bbox.height / 2.0f);
         float distance = static_cast<float>(cv::norm(det_center - screen_center));
         
         if (distance < min_distance) {
@@ -770,7 +917,8 @@ cs2_detection::Detection MouseController::selectTarget(const std::vector<cs2_det
         }
     }
     
-    return detections[best_idx];
+    current_target_ = enemy_targets[best_idx];
+    return current_target_;
 }
 
 void MouseController::aimAtTarget(const std::vector<cs2_detection::Detection>& detections, 
@@ -850,6 +998,8 @@ void CS2MouseIntegration::setupMouseControl() {
     std::cout << "  Raw input support for CS2 gameplay" << std::endl;
     std::cout << "  Absolute positioning for menus" << std::endl;
     std::cout << "  Auto-detection of game state" << std::endl;
+    std::cout << "  Team-based targeting system" << std::endl;
+    std::cout << "  Helmet target prioritization" << std::endl;
     std::cout << "\nControls:" << std::endl;
     std::cout << "  M = Toggle mouse control on/off" << std::endl;
     std::cout << "  V = Toggle debug mode" << std::endl;
@@ -860,10 +1010,18 @@ void CS2MouseIntegration::setupMouseControl() {
     std::cout << "  + = Increase sensitivity (currently 3.0x)" << std::endl;
     std::cout << "  - = Decrease sensitivity" << std::endl;
     std::cout << "  4/5/6 = Fast/Medium/Slow presets" << std::endl;
+    std::cout << "  Z = Set team to CT" << std::endl;
+    std::cout << "  X = Set team to T" << std::endl;
+    std::cout << "  B = Toggle team" << std::endl;
     std::cout << "\nPID Tips:" << std::endl;
     std::cout << "  P-gain: Higher = faster response, too high = oscillation" << std::endl;
     std::cout << "  I-gain: Eliminates steady-state error, too high = instability" << std::endl;
     std::cout << "  D-gain: Reduces overshoot, too high = noise sensitivity" << std::endl;
+    std::cout << "\nTeam Targeting:" << std::endl;
+    std::cout << "  Set your team first (Z for CT, X for T)" << std::endl;
+    std::cout << "  Only enemy targets will be aimed at" << std::endl;
+    std::cout << "  Helmet targets get priority boost" << std::endl;
+    std::cout << "  5% threshold prevents target switching spam" << std::endl;
     
     mouse_controller.printPIDStatus();
 }
@@ -940,6 +1098,14 @@ void CS2MouseIntegration::adjustPIDGains(char adjustment) {
 
 void CS2MouseIntegration::resetPID() {
     mouse_controller.resetPID();
+}
+
+void CS2MouseIntegration::setPlayerTeam(Team team) {
+    mouse_controller.setPlayerTeam(team);
+}
+
+void CS2MouseIntegration::toggleTeam() {
+    mouse_controller.toggleTeam();
 }
 
 } // namespace cs2_control

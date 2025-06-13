@@ -10,6 +10,13 @@
 
 namespace cs2_control {
 
+// Team enumeration
+enum class Team {
+    NONE = -1,
+    CT = 0,
+    T = 2  // T starts at class_id 2
+};
+
 // PID Controller for smooth mouse movement
 class PIDController {
 public:
@@ -49,6 +56,11 @@ public:
     void aimAtTarget(const std::vector<cs2_detection::Detection>& detections, 
                     TargetPriority priority = TargetPriority::CLOSEST_TO_CENTER);
     
+    // Team management
+    void setPlayerTeam(Team team);
+    Team getPlayerTeam() const { return player_team_; }
+    void toggleTeam();
+    
     // Configuration
     void setSensitivity(float scale);
     void setInputMethod(InputMethod method);
@@ -79,6 +91,11 @@ private:
     cv::Rect capture_region;
     bool is_active;
     bool debug_mode;
+    
+    // Team tracking
+    Team player_team_;
+    cs2_detection::Detection current_target_;
+    float target_switch_threshold_;
     
     // Performance optimization - window validation caching
     bool window_validated;
@@ -125,6 +142,12 @@ private:
                                         TargetPriority priority);
     void calibrateMouseSensitivity();
     cv::Point2f getCurrentMousePosition();
+    
+    // Team-based filtering and prioritization
+    std::vector<cs2_detection::Detection> filterEnemyTargets(const std::vector<cs2_detection::Detection>& detections);
+    bool isEnemyTarget(const cs2_detection::Detection& detection);
+    bool hasHelmet(const cs2_detection::Detection& detection);
+    float calculateTargetPriority(const cs2_detection::Detection& detection, cv::Point2f screen_center);
 };
 
 class CS2MouseIntegration {
@@ -144,6 +167,8 @@ public:
     void toggleDebugMode();
     void adjustPIDGains(char adjustment);
     void resetPID();
+    void setPlayerTeam(Team team);
+    void toggleTeam();
     
 private:
     MouseController mouse_controller;
