@@ -78,7 +78,7 @@ MouseController::MouseController()
     , last_target(-1, -1)
     , window_validated(false)
     , last_window_check(std::chrono::steady_clock::now())
-    , pid_controller_(0.01f, 0.03f, 0.0f)  // Optimized PID gains for mouse control
+    , pid_controller_(8.0f, 0.0f, 0.0f)  // Optimized PID gains for mouse control
     , pid_initialized_(false)
     , current_position_(0, 0)
 {
@@ -854,9 +854,9 @@ void CS2MouseIntegration::setupMouseControl() {
     std::cout << "  M = Toggle mouse control on/off" << std::endl;
     std::cout << "  V = Toggle debug mode" << std::endl;
     std::cout << "  R = Reset PID controller" << std::endl;
-    std::cout << "  p/P = Increase/Decrease PID P-gain" << std::endl;
-    std::cout << "  i/I = Increase/Decrease PID I-gain" << std::endl;
-    std::cout << "  d/D = Increase/Decrease PID D-gain" << std::endl;
+    std::cout << "  t/y = Increase/Decrease PID P-gain" << std::endl;
+    std::cout << "  u/i = Increase/Decrease PID I-gain" << std::endl;
+    std::cout << "  o/l = Increase/Decrease PID D-gain" << std::endl;
     std::cout << "  + = Increase sensitivity (currently 3.0x)" << std::endl;
     std::cout << "  - = Decrease sensitivity" << std::endl;
     std::cout << "  4/5/6 = Fast/Medium/Slow presets" << std::endl;
